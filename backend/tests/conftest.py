@@ -1,4 +1,3 @@
-import asyncio
 import os
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
@@ -8,22 +7,37 @@ import pytest_asyncio
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-# Set test database URL before importing app modules
+# Set test environment variables before importing app modules
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 os.environ["REDIS_URL"] = "redis://localhost:6379/0"
 os.environ["MOLTBOOK_APP_KEY"] = "test-key"
+os.environ["RATE_LIMIT_ENABLED"] = "false"  # Disable rate limiting in tests
 
 from app.core.database import get_db
 from app.main import app
 from app.models import Base
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for each test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+@pytest.fixture(autouse=True)
+def reset_app_state():
+    """Reset global app state before each test."""
+    import app.core.redis as redis_module
+    import app.core.database as db_module
+
+    # Reset Redis singletons
+    redis_module.redis_client = None
+    redis_module._redis_manager = None
+
+    # Reset database manager singleton
+    db_module._db_manager = None
+
+    yield
+
+    # Cleanup after test
+    redis_module.redis_client = None
+    redis_module._redis_manager = None
+    db_module._db_manager = None
+    app.dependency_overrides.clear()
 
 
 @pytest_asyncio.fixture(scope="function")
@@ -63,22 +77,6 @@ async def db_session(db_engine) -> AsyncGenerator[AsyncSession, None]:
 
     async with async_session_factory() as session:
         yield session
-
-
-@pytest_asyncio.fixture(scope="function")
-async def client(db_session):
-    """Create test client with database override."""
-    from httpx import ASGITransport, AsyncClient
-
-    async def override_get_db():
-        yield db_session
-
-    app.dependency_overrides[get_db] = override_get_db
-
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        yield ac
-
-    app.dependency_overrides.clear()
 
 
 @pytest.fixture
