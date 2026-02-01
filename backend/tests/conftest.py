@@ -100,4 +100,8 @@ def mock_redis():
     redis_mock.zremrangebyscore = AsyncMock(return_value=0)
     redis_mock.zcard = AsyncMock(return_value=1)
     redis_mock.zremrangebyrank = AsyncMock(return_value=0)
+    # Session caching methods
+    redis_mock.sadd = AsyncMock(return_value=1)
+    redis_mock.srem = AsyncMock(return_value=1)
+    redis_mock.smembers = AsyncMock(return_value=set())
     return redis_mock

@@ -130,6 +130,16 @@ class RedisKeys:
     def post_cache(post_id: str) -> str:
         return f"post:{post_id}"
 
+    @staticmethod
+    def session(token_hash: str) -> str:
+        """Cache key for session token -> agent data."""
+        return f"session:{token_hash}"
+
+    @staticmethod
+    def agent_sessions(agent_id: str) -> str:
+        """Set of token hashes for an agent (for bulk revocation)."""
+        return f"agent_sessions:{agent_id}"
+
 
 def jittered_ttl(base_ttl: int, jitter_percent: float = 0.2) -> int:
     """Add random jitter to TTL to prevent synchronized expiration."""

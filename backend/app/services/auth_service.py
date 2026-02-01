@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -9,12 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.utils import generate_token, hash_token
 from app.config import get_settings
 from app.core.exceptions import AuthenticationError, NotFoundError
+from app.core.redis import RedisKeys, get_redis, jittered_ttl
 from app.models import Agent, Session
 from app.schemas.auth import AgentResponse, AuthResponse, MoltbookAgent
 from app.services.moltbook_client import moltbook_client
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+SESSION_CACHE_BASE_TTL = 7 * 24 * 3600  # 7 days
 
 
 class AuthService:
@@ -52,6 +56,9 @@ class AuthService:
         )
         db.add(session)
         await db.flush()
+
+        # Cache session in Redis
+        await self._cache_session(token_hash, agent.id, True, expires_at)
 
         # Update last active
         agent.last_active_at = datetime.now(timezone.utc)
@@ -122,10 +129,32 @@ class AuthService:
                 return f"{base_handle}_{uuid.uuid4().hex[:8]}"
 
     async def get_agent_by_token(self, db: AsyncSession, token: str) -> Agent:
-        """Get agent from session token."""
+        """Get agent from session token. Checks Redis cache first."""
         token_hash = hash_token(token)
         now = datetime.now(timezone.utc)
 
+        # Try Redis cache first
+        cached_session = await self._get_cached_session(token_hash)
+
+        if cached_session:
+            # Cache hit - fetch agent directly (skip Session table query)
+            agent_id = UUID(cached_session["agent_id"])
+            result = await db.execute(
+                select(Agent).where(Agent.id == agent_id, Agent.is_active == True)
+            )
+            agent = result.scalar_one_or_none()
+
+            if not agent:
+                # Agent became inactive, clear cache
+                await self._delete_cached_session(token_hash, agent_id)
+                raise AuthenticationError(
+                    message="Agent not found or inactive",
+                    code="AGENT_INACTIVE",
+                )
+
+            return agent
+
+        # Cache miss - query database
         result = await db.execute(
             select(Session)
             .where(
@@ -158,11 +187,20 @@ class AuthService:
                 code="AGENT_INACTIVE",
             )
 
+        # Populate cache for future requests
+        await self._cache_session(token_hash, agent.id, True, session.expires_at)
+
         return agent
 
     async def revoke_session(self, db: AsyncSession, token: str) -> None:
         """Revoke a session token (logout)."""
         token_hash = hash_token(token)
+
+        # Get agent_id before revoking (for cache cleanup)
+        result = await db.execute(
+            select(Session.agent_id).where(Session.token_hash == token_hash)
+        )
+        agent_id = result.scalar_one_or_none()
 
         result = await db.execute(
             update(Session)
@@ -176,6 +214,9 @@ class AuthService:
                 code="SESSION_NOT_FOUND",
             )
 
+        # Clear cache
+        await self._delete_cached_session(token_hash, agent_id)
+
         logger.info("Session revoked")
 
     async def revoke_all_sessions(self, db: AsyncSession, agent_id: UUID) -> int:
@@ -185,6 +226,10 @@ class AuthService:
             .where(Session.agent_id == agent_id, Session.is_revoked == False)
             .values(is_revoked=True)
         )
+
+        # Clear all cached sessions for this agent
+        await self._delete_all_cached_sessions(agent_id)
+
         return result.rowcount
 
     def _agent_to_response(self, agent: Agent) -> AgentResponse:
@@ -200,6 +245,102 @@ class AuthService:
             post_count=agent.post_count,
             created_at=agent.created_at,
         )
+
+    async def _cache_session(
+        self,
+        token_hash: str,
+        agent_id: UUID,
+        is_active: bool,
+        expires_at: datetime,
+    ) -> None:
+        """Write session to Redis with TTL, track in agent_sessions Set."""
+        try:
+            redis = await get_redis()
+            session_key = RedisKeys.session(token_hash)
+            agent_sessions_key = RedisKeys.agent_sessions(str(agent_id))
+
+            cache_data = json.dumps({
+                "agent_id": str(agent_id),
+                "is_active": is_active,
+                "expires_at": expires_at.timestamp(),
+            })
+
+            # Calculate TTL based on expiration time
+            # Handle both naive and aware datetimes
+            now = datetime.now(timezone.utc)
+            if expires_at.tzinfo is None:
+                # Assume UTC for naive datetimes
+                expires_at_aware = expires_at.replace(tzinfo=timezone.utc)
+            else:
+                expires_at_aware = expires_at
+            ttl_seconds = int((expires_at_aware - now).total_seconds())
+            if ttl_seconds > 0:
+                ttl = jittered_ttl(min(ttl_seconds, SESSION_CACHE_BASE_TTL))
+                await redis.set(session_key, cache_data, ex=ttl)
+                await redis.sadd(agent_sessions_key, token_hash)
+                # Set TTL on the set as well (slightly longer to ensure cleanup)
+                await redis.expire(agent_sessions_key, ttl + 3600)
+        except Exception as e:
+            logger.warning(f"Failed to cache session: {e}")
+
+    async def _get_cached_session(self, token_hash: str) -> Optional[dict]:
+        """Read from Redis, validate expiration. Returns None on miss or error."""
+        try:
+            redis = await get_redis()
+            session_key = RedisKeys.session(token_hash)
+            cached = await redis.get(session_key)
+
+            if not cached:
+                return None
+
+            data = json.loads(cached)
+            expires_at = datetime.fromtimestamp(data["expires_at"], tz=timezone.utc)
+
+            # Check if expired
+            if expires_at <= datetime.now(timezone.utc):
+                await redis.delete(session_key)
+                return None
+
+            # Check if active
+            if not data.get("is_active", True):
+                return None
+
+            return data
+        except Exception as e:
+            logger.warning(f"Failed to get cached session: {e}")
+            return None
+
+    async def _delete_cached_session(self, token_hash: str, agent_id: Optional[UUID] = None) -> None:
+        """Delete single session from cache."""
+        try:
+            redis = await get_redis()
+            session_key = RedisKeys.session(token_hash)
+            await redis.delete(session_key)
+
+            if agent_id:
+                agent_sessions_key = RedisKeys.agent_sessions(str(agent_id))
+                await redis.srem(agent_sessions_key, token_hash)
+        except Exception as e:
+            logger.warning(f"Failed to delete cached session: {e}")
+
+    async def _delete_all_cached_sessions(self, agent_id: UUID) -> None:
+        """Delete all sessions for agent (for bulk logout)."""
+        try:
+            redis = await get_redis()
+            agent_sessions_key = RedisKeys.agent_sessions(str(agent_id))
+
+            # Get all token hashes for this agent
+            token_hashes = await redis.smembers(agent_sessions_key)
+
+            if token_hashes:
+                # Delete each session cache entry
+                session_keys = [RedisKeys.session(th) for th in token_hashes]
+                await redis.delete(*session_keys)
+
+            # Delete the agent sessions set
+            await redis.delete(agent_sessions_key)
+        except Exception as e:
+            logger.warning(f"Failed to delete all cached sessions: {e}")
 
 
 auth_service = AuthService()
