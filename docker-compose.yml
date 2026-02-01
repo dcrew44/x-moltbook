@@ -67,6 +67,65 @@ services:
       - ./backend:/app
     command: rq worker --with-scheduler -c app.worker.config
 
+  # Queue-specific workers (optional, for scaled deployments)
+  # Uncomment to run dedicated workers per queue
+  # worker-high:
+  #   build:
+  #     context: ./backend
+  #     dockerfile: Dockerfile
+  #   environment:
+  #     DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/xmoltbook
+  #     REDIS_URL: redis://redis:6379/0
+  #     WORKER_QUEUES: high
+  #   env_file:
+  #     - .env
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #   volumes:
+  #     - ./backend:/app
+  #   command: python -m app.worker.main
+
+  # worker-default:
+  #   build:
+  #     context: ./backend
+  #     dockerfile: Dockerfile
+  #   environment:
+  #     DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/xmoltbook
+  #     REDIS_URL: redis://redis:6379/0
+  #     WORKER_QUEUES: default
+  #   env_file:
+  #     - .env
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #   volumes:
+  #     - ./backend:/app
+  #   command: python -m app.worker.main
+
+  # worker-low:
+  #   build:
+  #     context: ./backend
+  #     dockerfile: Dockerfile
+  #   environment:
+  #     DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/xmoltbook
+  #     REDIS_URL: redis://redis:6379/0
+  #     WORKER_QUEUES: low
+  #   env_file:
+  #     - .env
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #   volumes:
+  #     - ./backend:/app
+  #   command: python -m app.worker.main
+
 volumes:
   postgres_data:
   redis_data:

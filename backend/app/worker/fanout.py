@@ -1,10 +1,7 @@
 import logging
-from uuid import UUID
-
-from redis import Redis
 
 from app.core.redis import RedisKeys, jittered_ttl
-from app.worker.config import REDIS_URL
+from app.worker.redis_client import get_sync_redis
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +24,7 @@ def fanout_to_timelines(
     if not target_ids:
         return 0
 
-    redis = Redis.from_url(REDIS_URL, decode_responses=True)
+    redis = get_sync_redis()
 
     updated = 0
     pipe = redis.pipeline()
@@ -63,7 +60,7 @@ def append_followee_posts(
     if not posts:
         return 0
 
-    redis = Redis.from_url(REDIS_URL, decode_responses=True)
+    redis = get_sync_redis()
 
     key = RedisKeys.timeline(follower_id)
     mapping = {post_id: ts for post_id, ts in posts}
@@ -97,7 +94,7 @@ def remove_author_posts(
     if not post_ids:
         return 0
 
-    redis = Redis.from_url(REDIS_URL, decode_responses=True)
+    redis = get_sync_redis()
 
     key = RedisKeys.timeline(follower_id)
 

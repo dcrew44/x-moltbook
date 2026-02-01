@@ -1,0 +1,99 @@
+# Extended docker-compose for scaled deployment
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.scale.yml up --scale api=3
+
+version: '3.8'
+
+services:
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  api:
+    # Override the default api config for production scaling
+    ports: []  # Remove direct port mapping, nginx handles it
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
+  # Queue-specific workers for scaled deployments
+  worker-high:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/xmoltbook
+      REDIS_URL: redis://redis:6379/0
+      WORKER_QUEUES: high
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: python -m app.worker.main
+    deploy:
+      replicas: 2
+
+  worker-default:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/xmoltbook
+      REDIS_URL: redis://redis:6379/0
+      WORKER_QUEUES: default
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: python -m app.worker.main
+    deploy:
+      replicas: 3
+
+  worker-low:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/xmoltbook
+      REDIS_URL: redis://redis:6379/0
+      WORKER_QUEUES: low
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: python -m app.worker.main
+    deploy:
+      replicas: 1
+
+  # Disable the default all-queue worker in scaled mode
+  worker:
+    deploy:
+      replicas: 0

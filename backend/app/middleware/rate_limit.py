@@ -111,6 +111,29 @@ def get_rate_limit_type(request: Request) -> Optional[str]:
     return "general"
 
 
+def get_client_ip(request: Request) -> str:
+    """
+    Get the real client IP address, handling proxied requests.
+
+    Checks X-Forwarded-For header first (for requests behind nginx/load balancer),
+    falls back to direct client IP.
+    """
+    # Check X-Forwarded-For header (set by nginx/load balancer)
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        # X-Forwarded-For can contain multiple IPs: "client, proxy1, proxy2"
+        # The first one is the original client
+        return forwarded_for.split(",")[0].strip()
+
+    # Check X-Real-IP header (alternative header some proxies use)
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip.strip()
+
+    # Fall back to direct client IP
+    return request.client.host if request.client else "unknown"
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Middleware for rate limiting requests."""
 
@@ -132,13 +155,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # Determine key identifier (agent_id or IP)
         if rate_type == "public":
-            identifier = request.client.host if request.client else "unknown"
+            identifier = get_client_ip(request)
         else:
             # For authenticated endpoints, we need the agent_id
             # This will be set by auth dependency, so we use a placeholder
             # and the actual rate limiting happens in the dependency
             # For now, we'll use IP as fallback
-            identifier = request.client.host if request.client else "unknown"
+            identifier = get_client_ip(request)
 
         key = f"{config.key_prefix}:{identifier}"
 
