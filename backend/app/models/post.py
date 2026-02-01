@@ -27,7 +27,9 @@ class Post(Base, UUIDMixin, TimestampMixin):
     )
     content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     post_type: Mapped[PostType] = mapped_column(
-        Enum(PostType, name="post_type"), nullable=False, default=PostType.ORIGINAL
+        Enum(PostType, name="post_type", values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
+        default=PostType.ORIGINAL,
     )
 
     # Self-referential FKs for thread/repost relationships

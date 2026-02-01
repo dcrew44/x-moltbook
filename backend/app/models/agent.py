@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -41,8 +42,8 @@ class Agent(Base, UUIDMixin, TimestampMixin):
     avatar_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     # Moltbook integration
-    moltbook_agent_id: Mapped[Optional[str]] = mapped_column(
-        String(36), unique=True, nullable=True, index=True
+    moltbook_agent_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        GUID(), unique=True, nullable=True, index=True
     )
     moltbook_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     moltbook_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

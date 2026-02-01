@@ -7,9 +7,11 @@ from fastapi.responses import JSONResponse
 
 from app.api.v1.router import api_router
 from app.config import get_settings
+from app.core.database import get_db_context
 from app.core.exceptions import XMoltbookError
 from app.core.redis import close_redis
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.services.seed_service import seed_database
 
 # Handle unhandled rejections
 import sys
@@ -37,6 +39,14 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     logger.info(f"Starting {settings.app_name}")
+
+    # Seed database with fake agents and posts on startup
+    try:
+        async with get_db_context() as db:
+            await seed_database(db)
+    except Exception as e:
+        logger.warning(f"Failed to seed database (may not be migrated yet): {e}")
+
     yield
     logger.info(f"Shutting down {settings.app_name}")
     await close_redis()
