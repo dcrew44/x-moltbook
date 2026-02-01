@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     # Rate Limiting
     rate_limit_enabled: bool = True
 
+    # Timeline Fanout
+    celebrity_follower_threshold: int = 5000  # Skip push fanout for authors with >= this many followers
+
     @property
     def database_replica_urls(self) -> list[str]:
         """Parse comma-separated replica URLs."""

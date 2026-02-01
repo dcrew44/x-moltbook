@@ -1,13 +1,14 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import or_, select, union_all
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Follow, Post
+from app.config import get_settings
+from app.models import Agent, Follow, Post
 from app.schemas.post import PostData
 from app.services.cache_service import cache_service
 from app.services.post_service import post_service
@@ -16,7 +17,12 @@ logger = logging.getLogger(__name__)
 
 
 class TimelineService:
-    """Service for timeline operations."""
+    """Service for timeline operations.
+
+    Uses a hybrid push/pull model:
+    - Normal accounts: Posts are pushed to followers' Redis timelines
+    - Celebrity accounts (>= threshold followers): Posts are pulled on-demand from DB
+    """
 
     async def get_home_timeline(
         self,
@@ -28,43 +34,225 @@ class TimelineService:
         """
         Get home timeline for an agent.
 
-        Combines posts from followed agents and own posts.
-        Uses cache when available, falls back to database.
+        Combines:
+        1. Pushed posts from Redis cache (from non-celebrity followees)
+        2. Pulled posts from DB (from celebrity followees)
+        3. Own posts
+
+        Uses cursor-based pagination with timestamp_ms as the cursor.
         """
-        # Try cache first
-        cursor_score = None
+        # Parse cursor (timestamp in milliseconds)
+        cursor_ms = None
+        cursor_dt = None
         if cursor:
             try:
-                cursor_score = int(cursor)
+                cursor_ms = int(cursor)
+                cursor_dt = datetime.fromtimestamp(cursor_ms / 1000, tz=timezone.utc)
             except ValueError:
-                # Fall back to timestamp-based cursor for DB
-                pass
+                # Try parsing as ISO timestamp for backwards compatibility
+                try:
+                    cursor_dt = datetime.fromisoformat(cursor)
+                    cursor_ms = int(cursor_dt.timestamp() * 1000)
+                except ValueError:
+                    pass
 
-        cached_ids, next_cache_cursor = await cache_service.get_timeline(
-            agent_id,
-            limit=limit,
-            max_score=cursor_score,
+        # Get celebrity and non-celebrity followee IDs
+        celebrity_ids, non_celebrity_ids = await self._get_followee_ids_by_celebrity_status(
+            db, agent_id
         )
 
-        if cached_ids:
-            # Fetch posts by IDs from database
-            posts = await self._fetch_posts_by_ids(db, cached_ids, agent_id)
+        # Fetch from Redis cache (non-celebrity posts from followees)
+        cached_ids, _ = await cache_service.get_timeline(
+            agent_id,
+            limit=limit + 1,  # Fetch extra to check has_more
+            max_score=cursor_ms,
+        )
 
-            # Sort by created_at descending to maintain order
-            posts.sort(key=lambda p: p.created_at, reverse=True)
+        # Fetch celebrity posts from DB (pulled on-demand)
+        celebrity_posts = await self._fetch_celebrity_posts(
+            db=db,
+            celebrity_ids=celebrity_ids,
+            viewer_id=agent_id,
+            cursor_dt=cursor_dt,
+            limit=limit + 1,
+        )
 
-            has_more = next_cache_cursor is not None
-            next_cursor = str(next_cache_cursor) if next_cache_cursor else None
-
-            return posts, next_cursor, has_more
-
-        # Cache miss - fetch from database
-        return await self._fetch_timeline_from_db(
+        # Fetch own posts from DB (not pushed to own timeline)
+        own_posts = await self._fetch_own_posts(
             db=db,
             agent_id=agent_id,
-            cursor=cursor,
-            limit=limit,
+            cursor_dt=cursor_dt,
+            limit=limit + 1,
         )
+
+        # Fetch cached posts by IDs
+        cached_posts: list[PostData] = []
+        if cached_ids:
+            cached_posts = await self._fetch_posts_by_ids(db, cached_ids, agent_id)
+        elif non_celebrity_ids:
+            # Cache miss - fetch non-celebrity followee posts from DB
+            cached_posts = await self._fetch_non_celebrity_posts(
+                db=db,
+                followee_ids=non_celebrity_ids,
+                viewer_id=agent_id,
+                cursor_dt=cursor_dt,
+                limit=limit + 1,
+            )
+
+        # Merge and sort all posts by created_at descending, with ID as tiebreaker
+        # Normalize timestamps to UTC for comparison (handles both naive and aware datetimes)
+        def sort_key(post: PostData):
+            ts = post.created_at
+            if ts.tzinfo is None:
+                # Treat naive datetime as UTC
+                ts = ts.replace(tzinfo=timezone.utc)
+            return (ts, post.id)
+
+        all_posts = cached_posts + celebrity_posts + own_posts
+        all_posts.sort(key=sort_key, reverse=True)
+
+        # Deduplicate (in case own posts appear in both sources)
+        seen_ids: set[UUID] = set()
+        unique_posts: list[PostData] = []
+        for post in all_posts:
+            if post.id not in seen_ids:
+                seen_ids.add(post.id)
+                unique_posts.append(post)
+
+        # Apply pagination
+        has_more = len(unique_posts) > limit
+        result_posts = unique_posts[:limit]
+
+        # Calculate next cursor
+        next_cursor = None
+        if has_more and result_posts:
+            last_post = result_posts[-1]
+            next_cursor = str(int(last_post.created_at.timestamp() * 1000))
+
+        return result_posts, next_cursor, has_more
+
+    async def _get_followee_ids_by_celebrity_status(
+        self,
+        db: AsyncSession,
+        agent_id: UUID,
+    ) -> tuple[list[UUID], list[UUID]]:
+        """
+        Get IDs of followed accounts split by celebrity status.
+
+        Returns:
+            Tuple of (celebrity_ids, non_celebrity_ids)
+        """
+        settings = get_settings()
+        threshold = settings.celebrity_follower_threshold
+
+        result = await db.execute(
+            select(Follow.followed_id, Agent.follower_count)
+            .join(Agent, Agent.id == Follow.followed_id)
+            .where(Follow.follower_id == agent_id)
+        )
+
+        celebrity_ids: list[UUID] = []
+        non_celebrity_ids: list[UUID] = []
+
+        for followed_id, follower_count in result.all():
+            if follower_count >= threshold:
+                celebrity_ids.append(followed_id)
+            else:
+                non_celebrity_ids.append(followed_id)
+
+        return celebrity_ids, non_celebrity_ids
+
+    async def _fetch_celebrity_posts(
+        self,
+        db: AsyncSession,
+        celebrity_ids: list[UUID],
+        viewer_id: UUID,
+        cursor_dt: Optional[datetime] = None,
+        limit: int = 20,
+    ) -> list[PostData]:
+        """Fetch recent posts from celebrity accounts."""
+        if not celebrity_ids:
+            return []
+
+        query = (
+            select(Post)
+            .options(
+                selectinload(Post.author),
+                selectinload(Post.repost_of).selectinload(Post.author),
+                selectinload(Post.quote_of).selectinload(Post.author),
+            )
+            .where(Post.author_id.in_(celebrity_ids))
+            .order_by(Post.created_at.desc(), Post.id.desc())
+        )
+
+        if cursor_dt:
+            query = query.where(Post.created_at < cursor_dt)
+
+        query = query.limit(limit)
+        result = await db.execute(query)
+        posts = list(result.scalars().all())
+
+        return [await post_service._post_to_data(db, p, viewer_id) for p in posts]
+
+    async def _fetch_own_posts(
+        self,
+        db: AsyncSession,
+        agent_id: UUID,
+        cursor_dt: Optional[datetime] = None,
+        limit: int = 20,
+    ) -> list[PostData]:
+        """Fetch agent's own posts for their timeline."""
+        query = (
+            select(Post)
+            .options(
+                selectinload(Post.author),
+                selectinload(Post.repost_of).selectinload(Post.author),
+                selectinload(Post.quote_of).selectinload(Post.author),
+            )
+            .where(Post.author_id == agent_id)
+            .order_by(Post.created_at.desc(), Post.id.desc())
+        )
+
+        if cursor_dt:
+            query = query.where(Post.created_at < cursor_dt)
+
+        query = query.limit(limit)
+        result = await db.execute(query)
+        posts = list(result.scalars().all())
+
+        return [await post_service._post_to_data(db, p, agent_id) for p in posts]
+
+    async def _fetch_non_celebrity_posts(
+        self,
+        db: AsyncSession,
+        followee_ids: list[UUID],
+        viewer_id: UUID,
+        cursor_dt: Optional[datetime] = None,
+        limit: int = 20,
+    ) -> list[PostData]:
+        """Fetch posts from non-celebrity followees (DB fallback when cache misses)."""
+        if not followee_ids:
+            return []
+
+        query = (
+            select(Post)
+            .options(
+                selectinload(Post.author),
+                selectinload(Post.repost_of).selectinload(Post.author),
+                selectinload(Post.quote_of).selectinload(Post.author),
+            )
+            .where(Post.author_id.in_(followee_ids))
+            .order_by(Post.created_at.desc(), Post.id.desc())
+        )
+
+        if cursor_dt:
+            query = query.where(Post.created_at < cursor_dt)
+
+        query = query.limit(limit)
+        result = await db.execute(query)
+        posts = list(result.scalars().all())
+
+        return [await post_service._post_to_data(db, p, viewer_id) for p in posts]
 
     async def _fetch_timeline_from_db(
         self,

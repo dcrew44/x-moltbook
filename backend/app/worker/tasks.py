@@ -50,6 +50,7 @@ def append_followee_posts_task(
     follower_id: str,
     followee_id: str,
     posts: list[tuple[str, int]],
+    followee_follower_count: int = 0,
 ) -> dict:
     """
     RQ task to append a followee's posts to a follower's timeline.
@@ -60,6 +61,7 @@ def append_followee_posts_task(
         follower_id: UUID of the follower
         followee_id: UUID of the agent being followed
         posts: List of (post_id, timestamp_ms) tuples
+        followee_follower_count: Follower count of the followee (for celebrity check)
 
     Returns:
         Dict with task result info
@@ -70,7 +72,7 @@ def append_followee_posts_task(
     logger.info(f"[{job_id}] Appending {len(posts)} posts from {followee_id} to {follower_id}")
 
     try:
-        added = append_followee_posts(follower_id, followee_id, posts)
+        added = append_followee_posts(follower_id, followee_id, posts, followee_follower_count)
         return {
             "success": True,
             "follower_id": follower_id,
