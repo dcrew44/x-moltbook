@@ -12,7 +12,7 @@ from app.config import get_settings
 from app.core.exceptions import AuthenticationError, NotFoundError
 from app.core.redis import RedisKeys, get_redis, jittered_ttl
 from app.models import Agent, Session
-from app.schemas.auth import AgentResponse, AuthResponse, MoltbookAgent
+from app.schemas.auth import AgentResponse, AuthResponse, DevAuthRequest, MoltbookAgent
 from app.services.moltbook_client import moltbook_client
 
 logger = logging.getLogger(__name__)
@@ -71,6 +71,79 @@ class AuthService:
             agent=self._agent_to_response(agent),
             expires_at=expires_at,
         )
+
+    async def authenticate_dev(
+        self,
+        db: AsyncSession,
+        request: DevAuthRequest,
+        user_agent: Optional[str] = None,
+        ip_address: Optional[str] = None,
+    ) -> AuthResponse:
+        """
+        Authenticate as a dev/test user without Moltbook verification.
+
+        Creates or retrieves the agent by handle and creates a new session.
+        Only for development/testing purposes.
+        """
+        # Find or create agent by handle
+        agent = await self._get_or_create_dev_agent(db, request)
+
+        # Create session
+        token = generate_token()
+        token_hash = hash_token(token)
+        expires_at = datetime.now(timezone.utc) + timedelta(days=settings.session_expire_days)
+
+        session = Session(
+            agent_id=agent.id,
+            token_hash=token_hash,
+            expires_at=expires_at,
+            user_agent=user_agent,
+            ip_address=ip_address,
+        )
+        db.add(session)
+        await db.flush()
+
+        # Cache session in Redis
+        await self._cache_session(token_hash, agent.id, True, expires_at)
+
+        # Update last active
+        agent.last_active_at = datetime.now(timezone.utc)
+
+        logger.info(f"Dev agent {agent.handle} authenticated, session {session.id}")
+
+        return AuthResponse(
+            session_id=session.id,
+            token=token,
+            agent=self._agent_to_response(agent),
+            expires_at=expires_at,
+        )
+
+    async def _get_or_create_dev_agent(
+        self,
+        db: AsyncSession,
+        request: DevAuthRequest,
+    ) -> Agent:
+        """Get existing agent by handle or create new dev agent."""
+        result = await db.execute(
+            select(Agent).where(Agent.handle == request.handle)
+        )
+        agent = result.scalar_one_or_none()
+
+        if agent:
+            return agent
+
+        # Create new dev agent
+        agent = Agent(
+            handle=request.handle,
+            display_name=request.display_name or request.handle,
+            moltbook_agent_id=None,  # No Moltbook link
+            moltbook_verified=False,
+        )
+        db.add(agent)
+        await db.flush()
+
+        logger.info(f"Created new dev agent: {agent.handle}")
+        return agent
 
     async def _get_or_create_agent(
         self,

@@ -13,6 +13,23 @@ class MoltbookAuthRequest(BaseModel):
     )
 
 
+class DevAuthRequest(BaseModel):
+    """Request to authenticate as a dev/test user (dev mode only)."""
+
+    handle: str = Field(
+        ...,
+        min_length=1,
+        max_length=40,
+        pattern=r"^[a-z0-9_]+$",
+        description="Unique handle for the test agent (lowercase alphanumeric and underscores)",
+    )
+    display_name: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="Display name (defaults to handle if not provided)",
+    )
+
+
 class MoltbookAgent(BaseModel):
     """Verified agent data from Moltbook."""
 

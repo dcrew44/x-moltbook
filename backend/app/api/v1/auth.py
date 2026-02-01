@@ -4,10 +4,11 @@ from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_agent
+from app.config import get_settings
 from app.core.database import get_db
 from app.core.exceptions import AuthenticationError
 from app.models import Agent
-from app.schemas.auth import AuthResponse, MoltbookAuthRequest
+from app.schemas.auth import AuthResponse, DevAuthRequest, MoltbookAuthRequest
 from app.services.auth_service import auth_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -46,6 +47,39 @@ async def authenticate_moltbook(
     return await auth_service.authenticate_via_moltbook(
         db=db,
         identity_token=identity_token,
+        user_agent=user_agent,
+        ip_address=ip_address,
+    )
+
+
+@router.post("/dev", response_model=AuthResponse)
+async def authenticate_dev(
+    request: Request,
+    body: DevAuthRequest,
+    db: AsyncSession = Depends(get_db),
+) -> AuthResponse:
+    """
+    Authenticate as a dev/test user (development mode only).
+
+    Creates or retrieves an agent by handle without Moltbook verification.
+    This endpoint is only available when APP_ENV=development.
+    """
+    settings = get_settings()
+
+    if not settings.is_development:
+        raise AuthenticationError(
+            message="Dev authentication is only available in development mode",
+            code="DEV_AUTH_DISABLED",
+            hint="Set APP_ENV=development to enable dev authentication",
+        )
+
+    # Get client info for session tracking
+    user_agent = request.headers.get("user-agent")
+    ip_address = request.client.host if request.client else None
+
+    return await auth_service.authenticate_dev(
+        db=db,
+        request=body,
         user_agent=user_agent,
         ip_address=ip_address,
     )
