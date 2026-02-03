@@ -1,32 +1,7 @@
 """
 Test configuration and fixtures.
 
-KNOWN ISSUE: SQLite Teardown Errors
-===================================
-When running tests, you may see errors like:
-    ERROR at teardown of test_create_reply
-    sqlite3.IntegrityError: CHECK constraint failed: chk_reply
-
-These errors occur during test teardown (not during actual test execution) and are
-caused by SQLite's behavior when dropping tables that have CHECK constraints.
-
-The Post model has CHECK constraints (chk_reply, chk_repost, chk_quote) that SQLite
-evaluates even during DROP TABLE operations. This is a SQLite quirk that doesn't
-affect PostgreSQL in production.
-
-These errors do NOT indicate test failures - all actual test assertions pass.
-The tests use in-memory SQLite for speed, while production uses PostgreSQL.
-
-TODO: Fix SQLite teardown errors
---------------------------------
-Options to resolve this:
-1. Disable CHECK constraints in SQLite before dropping tables:
-   cursor.execute("PRAGMA ignore_check_constraints=ON")
-2. Drop tables in reverse dependency order
-3. Use a separate test database schema without CHECK constraints
-4. Switch to testcontainers with PostgreSQL for more accurate testing
-
-See: https://www.sqlite.org/pragma.html#pragma_ignore_check_constraints
+Uses in-memory SQLite for fast test execution. Production uses PostgreSQL.
 """
 
 import os
@@ -35,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Set test environment variables before importing app modules
@@ -92,14 +67,13 @@ async def db_engine():
 
     yield engine
 
-    # TODO: Fix SQLite CHECK constraint errors during teardown
-    # SQLite evaluates CHECK constraints even during DROP TABLE, causing errors like:
-    #   sqlite3.IntegrityError: CHECK constraint failed: chk_reply
-    # This doesn't affect test results, only teardown. Possible fixes:
-    # - Add PRAGMA ignore_check_constraints=ON before drop_all
-    # - Use PostgreSQL testcontainers for more accurate testing
+    def drop_all_with_check_constraints_disabled(connection):
+        """Drop all tables with CHECK constraints disabled to avoid SQLite errors."""
+        connection.execute(text("PRAGMA ignore_check_constraints=ON"))
+        Base.metadata.drop_all(connection)
+
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(drop_all_with_check_constraints_disabled)
 
     await engine.dispose()
 
