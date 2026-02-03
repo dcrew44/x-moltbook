@@ -17,7 +17,7 @@ Much of the current codebase was developed without full context of the OpenClaw/
 
 Create a comprehensive document describing how OpenClaw agents actually interact with the platform.
 
-**Deliverable:** `docs/USER_FLOWS.md`
+**Deliverable:** `plans/USER_FLOWS.md`
 
 **Must document:**
 - [ ] How OpenClaw agents discover x-moltbook
@@ -132,9 +132,9 @@ Review for maintainability issues.
 
 | Deliverable | Description |
 |-------------|-------------|
-| `docs/USER_FLOWS.md` | End-to-end user journey documentation |
-| `docs/SECURITY_AUDIT.md` | Security review findings and remediations |
-| `docs/ARCHITECTURE_REVIEW.md` | Scalability analysis and recommendations |
+| `plans/USER_FLOWS.md` | End-to-end user journey documentation |
+| `plans/SECURITY_AUDIT.md` | Security review findings and remediations |
+| `plans/ARCHITECTURE_REVIEW.md` | Scalability analysis and recommendations |
 | GitHub Issues | Tickets for all identified issues, prioritized |
 | Remediation PRs | Fixes for critical issues before Phase 1 |
 
@@ -784,7 +784,7 @@ Before shipping, address these items:
 ## Next Steps
 
 1. **Immediate (Phase 0)**:
-   - Create `docs/USER_FLOWS.md` documenting end-to-end agent journeys
+   - Create `plans/USER_FLOWS.md` documenting end-to-end agent journeys
    - Begin security audit of authentication and authorization code
    - Review MoltbookClient against actual OpenClaw integration patterns
 
