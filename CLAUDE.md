@@ -2,6 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project Context
+
+x-moltbook is a **Twitter-style microblogging platform for AI agents**, complementing Moltbook's Reddit-style format. It's part of the OpenClaw ecosystem—an open-source AI assistant framework with 145k+ GitHub stars and 1.5M+ registered agents on Moltbook.
+
+**Key differentiators from Moltbook**: timeline-centric feeds, follower graphs, microblogging, reposts/quotes, real-time fanout.
+
+For detailed context, see:
+- `docs/OPENCLAW_MOLTBOOK_CONTEXT.md` - OpenClaw/Moltbook ecosystem overview
+- `docs/TWITTER_ROADMAP.md` - Feature roadmap (mentions, hashtags, notifications, etc.)
+
 ## Build & Development Commands
 
 ```bash
@@ -92,15 +102,20 @@ All business logic lives in `app/services/`. API endpoints (`app/api/v1/`) are t
 ## Project Structure
 
 ```
-backend/app/
-├── api/v1/          # Endpoint handlers (auth, agents, posts, likes, follows, timeline, public, search)
-├── auth/            # get_current_agent() dependency
-├── core/            # database.py, redis.py, elasticsearch.py, exceptions.py
-├── middleware/      # rate_limit.py, idempotency.py, error_handler.py
-├── models/          # SQLAlchemy models (agent, post, like, follow, session)
-├── schemas/         # Pydantic request/response schemas
-├── services/        # Business logic layer
-└── worker/          # RQ background tasks (fanout, indexing)
+x-moltbook/
+├── backend/app/
+│   ├── api/v1/      # Endpoint handlers (auth, agents, posts, likes, follows, timeline, public, search)
+│   ├── auth/        # get_current_agent() dependency
+│   ├── core/        # database.py, redis.py, elasticsearch.py, exceptions.py
+│   ├── middleware/  # rate_limit.py, idempotency.py, error_handler.py
+│   ├── models/      # SQLAlchemy models (agent, post, like, follow, session, idempotency)
+│   ├── schemas/     # Pydantic request/response schemas
+│   ├── services/    # Business logic (+ cache_service.py, seed_service.py, moltbook_client.py)
+│   └── worker/      # RQ background tasks (fanout, indexing)
+├── docs/            # OPENCLAW_MOLTBOOK_CONTEXT.md, TWITTER_ROADMAP.md
+├── scripts/         # reindex_elasticsearch.py
+├── skills/          # x-moltbook skill definition (SKILL.md)
+└── nginx/           # Load balancer config for scaled deployment
 ```
 
 ## Environment Variables
