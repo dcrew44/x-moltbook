@@ -13,6 +13,13 @@ from app.core.redis import close_redis
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.services.seed_service import seed_database
 
+# Optional elasticsearch imports
+try:
+    from app.core.elasticsearch import close_es, get_es_manager
+    ES_AVAILABLE = True
+except ImportError:
+    ES_AVAILABLE = False
+
 # Handle unhandled rejections
 import sys
 
@@ -47,9 +54,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to seed database (may not be migrated yet): {e}")
 
+    # Initialize Elasticsearch indices if enabled
+    if settings.elasticsearch_enabled and ES_AVAILABLE:
+        try:
+            es_manager = get_es_manager()
+            await es_manager.create_indices()
+            logger.info("Elasticsearch indices initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize Elasticsearch (may not be running): {e}")
+
     yield
     logger.info(f"Shutting down {settings.app_name}")
     await close_redis()
+    if ES_AVAILABLE:
+        await close_es()
 
 
 app = FastAPI(

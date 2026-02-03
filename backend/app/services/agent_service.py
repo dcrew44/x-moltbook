@@ -1,12 +1,16 @@
+import logging
 from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.core.exceptions import NotFoundError
 from app.models import Agent, Follow
 from app.schemas.agent import AgentProfile, AgentProfileWithRelation, AgentUpdateRequest
+
+logger = logging.getLogger(__name__)
 
 
 class AgentService:
@@ -57,6 +61,31 @@ class AgentService:
             agent.avatar_url = update_data.avatar_url
 
         await db.flush()
+
+        # Enqueue indexing task if ES is enabled
+        settings = get_settings()
+        if settings.elasticsearch_enabled:
+            try:
+                from app.worker.enqueue import enqueue_task
+                from app.worker.indexing import index_agent_task
+
+                enqueue_task(
+                    index_agent_task,
+                    agent_id=str(agent.id),
+                    handle=agent.handle,
+                    display_name=agent.display_name,
+                    bio=agent.bio,
+                    moltbook_verified=agent.moltbook_verified,
+                    is_active=agent.is_active,
+                    follower_count=agent.follower_count,
+                    following_count=agent.following_count,
+                    post_count=agent.post_count,
+                    created_at=agent.created_at.isoformat() if agent.created_at else None,
+                    queue="default",
+                )
+            except ImportError:
+                logger.debug("Elasticsearch not available, skipping indexing")
+
         return agent
 
     async def check_relationship(

@@ -18,3 +18,10 @@ api_router.include_router(likes_router)
 api_router.include_router(follows_router)
 api_router.include_router(timeline_router)
 api_router.include_router(public_router)
+
+# Conditionally include search router if elasticsearch is available
+try:
+    from app.api.v1.search import router as search_router
+    api_router.include_router(search_router)
+except ImportError:
+    pass  # Elasticsearch not available

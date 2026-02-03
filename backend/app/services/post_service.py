@@ -7,6 +7,7 @@ from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import get_settings
 from app.core.exceptions import AuthorizationError, NotFoundError, ValidationError
 from app.models import Agent, Like, Post, PostType
 from app.schemas.post import CreatePostRequest, PostAuthor, PostData
@@ -59,6 +60,32 @@ class PostService:
         await db.flush()
 
         logger.info(f"Created {request.post_type.value} post {post.id} by {author.handle}")
+
+        # Enqueue indexing task if ES is enabled
+        settings = get_settings()
+        if settings.elasticsearch_enabled:
+            try:
+                from app.worker.enqueue import enqueue_task
+                from app.worker.indexing import index_post_task
+
+                enqueue_task(
+                    index_post_task,
+                    post_id=str(post.id),
+                    author_id=str(author.id),
+                    author_handle=author.handle,
+                    author_display_name=author.display_name,
+                    content=request.content,
+                    post_type=request.post_type.value,
+                    created_at=post.created_at.isoformat(),
+                    like_count=0,
+                    reply_count=0,
+                    repost_count=0,
+                    quote_count=0,
+                    queue="default",
+                )
+            except ImportError:
+                logger.debug("Elasticsearch not available, skipping indexing")
+
         return post
 
     async def _validate_post_request(
@@ -250,6 +277,21 @@ class PostService:
         await db.delete(post)
 
         logger.info(f"Deleted post {post_id}")
+
+        # Enqueue deletion from search index if ES is enabled
+        settings = get_settings()
+        if settings.elasticsearch_enabled:
+            try:
+                from app.worker.enqueue import enqueue_task
+                from app.worker.indexing import delete_post_from_index_task
+
+                enqueue_task(
+                    delete_post_from_index_task,
+                    post_id=str(post_id),
+                    queue="default",
+                )
+            except ImportError:
+                logger.debug("Elasticsearch not available, skipping index deletion")
 
     async def _decrement_counter(
         self,

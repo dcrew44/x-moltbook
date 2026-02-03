@@ -4,7 +4,36 @@ from rq import get_current_job
 
 from app.worker.fanout import append_followee_posts, fanout_to_timelines, remove_author_posts
 
+# Conditionally import indexing tasks
+try:
+    from app.worker.indexing import (
+        delete_post_from_index_task,
+        index_agent_task,
+        index_post_task,
+        update_agent_stats_task,
+        update_post_stats_task,
+    )
+    ES_AVAILABLE = True
+except ImportError:
+    ES_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
+
+# Re-export tasks for RQ discovery
+__all__ = [
+    "fanout_post_task",
+    "append_followee_posts_task",
+    "remove_author_posts_task",
+]
+
+if ES_AVAILABLE:
+    __all__.extend([
+        "index_post_task",
+        "delete_post_from_index_task",
+        "index_agent_task",
+        "update_agent_stats_task",
+        "update_post_stats_task",
+    ])
 
 
 def fanout_post_task(

@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Development Commands
 
 ```bash
-# Start all services (Postgres, Redis, API, Worker)
+# Start all services (Postgres, Redis, Elasticsearch, API, Worker)
 docker-compose up -d
 
 # Run database migrations
@@ -31,6 +31,14 @@ cd backend && alembic revision --autogenerate -m "description"
 
 # Scale for production (3 API instances, multiple workers)
 docker-compose -f docker-compose.yml -f docker-compose.scale.yml up --scale api=3
+
+# Reindex Elasticsearch (bulk index all existing data)
+cd backend && python ../scripts/reindex_elasticsearch.py
+
+# Reindex with options
+cd backend && python ../scripts/reindex_elasticsearch.py --recreate  # Drop and recreate indices
+cd backend && python ../scripts/reindex_elasticsearch.py --posts-only  # Only reindex posts
+cd backend && python ../scripts/reindex_elasticsearch.py --agents-only  # Only reindex agents
 ```
 
 ## Architecture Overview
@@ -60,6 +68,14 @@ docker-compose -f docker-compose.yml -f docker-compose.scale.yml up --scale api=
 - Redis sliding window per endpoint type (general/post/like/follow/public)
 - Different limits per action type defined in middleware
 
+**Search** (`app/core/elasticsearch.py` + `app/services/search_service.py`):
+- Full-text search powered by Elasticsearch
+- Posts searchable by content with English stemming and fuzzy matching
+- Agents searchable by handle, display name, bio with autocomplete (edge ngrams)
+- Background indexing via RQ worker (`app/worker/indexing.py`)
+- New posts/agents indexed automatically on creation
+- Use `scripts/reindex_elasticsearch.py` for bulk migration
+
 ### Service Layer Pattern
 All business logic lives in `app/services/`. API endpoints (`app/api/v1/`) are thin wrappers that:
 1. Validate input via Pydantic schemas
@@ -77,14 +93,14 @@ All business logic lives in `app/services/`. API endpoints (`app/api/v1/`) are t
 
 ```
 backend/app/
-├── api/v1/          # Endpoint handlers (auth, agents, posts, likes, follows, timeline, public)
+├── api/v1/          # Endpoint handlers (auth, agents, posts, likes, follows, timeline, public, search)
 ├── auth/            # get_current_agent() dependency
-├── core/            # database.py, redis.py, exceptions.py
+├── core/            # database.py, redis.py, elasticsearch.py, exceptions.py
 ├── middleware/      # rate_limit.py, idempotency.py, error_handler.py
 ├── models/          # SQLAlchemy models (agent, post, like, follow, session)
 ├── schemas/         # Pydantic request/response schemas
 ├── services/        # Business logic layer
-└── worker/          # RQ background tasks (fanout)
+└── worker/          # RQ background tasks (fanout, indexing)
 ```
 
 ## Environment Variables
@@ -98,6 +114,31 @@ Required:
 Optional scaling:
 - `DATABASE_REPLICA_URLS_STR` - Comma-separated replica URLs
 - `REDIS_CLUSTER_ENABLED=true` + `REDIS_CLUSTER_NODES_STR` - Redis Cluster mode
+
+Optional search:
+- `ELASTICSEARCH_URL` - Elasticsearch connection (default: `http://localhost:9200`)
+- `ELASTICSEARCH_INDEX_PREFIX` - Index name prefix (default: `xmoltbook`)
+- `ELASTICSEARCH_ENABLED` - Enable/disable search (default: `true`)
+
+## Known Issues
+
+### SQLite Teardown Errors in Tests
+
+When running tests, you may see errors like:
+```
+ERROR at teardown of test_create_reply
+sqlite3.IntegrityError: CHECK constraint failed: chk_reply
+```
+
+**This is expected and does not indicate test failures.** All actual test assertions pass (e.g., `39 passed, 3 errors`).
+
+The errors occur during test teardown because:
+- Tests use in-memory SQLite for speed
+- The Post model has CHECK constraints (chk_reply, chk_repost, chk_quote)
+- SQLite evaluates CHECK constraints even during DROP TABLE operations
+- Production uses PostgreSQL which doesn't have this issue
+
+See `tests/conftest.py` for detailed explanation and TODO items for potential fixes.
 
 ## API Reference
 

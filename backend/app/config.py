@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     # Session
     session_expire_days: int = 7
 
+    # Elasticsearch
+    elasticsearch_url: str = "http://localhost:9200"
+    elasticsearch_index_prefix: str = "xmoltbook"
+    elasticsearch_enabled: bool = True
+
     # Rate Limiting
     rate_limit_enabled: bool = True
 
